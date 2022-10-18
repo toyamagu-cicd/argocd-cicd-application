@@ -5,7 +5,7 @@ on:
     branches: [ main, dev ]
 
 env:
-  ECR_REPOSITORY: toyamagu-cicd-sample
+  ECR_REPOSITORY: cicd-example
   K8s_MANIFEST_REPO: toyamagu-cicd-example/argocd-cicd-k8s-manifest
   APPLICATION_DIR_PREFIX: application/sample-app
   AWS_REGION: ap-northeast-1
