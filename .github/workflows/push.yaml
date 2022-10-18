@@ -1,0 +1,136 @@
+name: github-ci
+
+on:
+  push:
+    branches: [ main, dev ]
+
+env:
+  ECR_REPOSITORY: toyamagu-cicd-sample
+  K8s_MANIFEST_REPO: toyamagu-cicd-example/argocd-cicd-k8s-manifest
+  APPLICATION_DIR_PREFIX: application/sample-app
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  build-and-publish:
+    name: Building and Pushing an Image
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      container-tag: ${{ steps.build-image.outputs.container-tag }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        role-to-assume: ${{ secrets.IAM_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        working-dir: "."
+      run: |
+        TAG_PREFIX=$(echo ${{github.ref_name}} | sed 's/[\/#]/-/g')
+        CONTAINER_REPO="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}"
+        CONTAINER_TAG="${TAG_PREFIX}-${{ github.sha }}"
+        CONTAINER_NAME=${CONTAINER_REPO}:${CONTAINER_TAG}
+        docker build -t ${CONTAINER_NAME} .
+        docker push ${CONTAINER_NAME}
+        echo "::set-output name=container-repo::${CONTAINER_REPO}"
+        echo "::set-output name=container-tag::${CONTAINER_TAG}"
+    - name: test
+      run: |
+        echo "${{ steps.build-image.outputs.container-repo }}"
+        echo "${{ steps.build-image.outputs.container-tag }}"
+
+  update-k8s-manifest:
+    name: Update k8s manifest
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+
+    steps:
+    - name: Set git config
+      run: |
+        git config --global user.email "${GITHUB_REPOSITORY}@github.com"
+        git config --global user.name "${GITHUB_REPOSITORY}"
+
+    - name: Generate token
+      id: generate-token
+      uses: tibdex/github-app-token@v1
+      with:
+        app_id: ${{ secrets.APP_ID }}
+        private_key: ${{ secrets[format('PEM_{0}', secrets.APP_ID)] }}
+
+    - name: Set target branch and directory
+      id: set-target-branch
+      run: |
+        CHECKOUT_BRANCH="dev"
+        TARGET_BRANCH=$([ "${{ github.ref_name }}" == "main" ] && echo "main" || echo "dev")
+        TARGET_DIR=$([ "${{ github.ref_name }}" == "main" ] && echo "prd" || echo "dev")
+        echo "Target branch is $TARGET_BRANCH"
+        echo "::set-output name=checkout-branch::${CHECKOUT_BRANCH}"
+        echo "::set-output name=target-branch::${TARGET_BRANCH}"
+        echo "::set-output name=target-dir::${TARGET_DIR}"
+
+    - name: Checkout
+      uses: actions/checkout@v3
+      with: 
+        repository: ${{ env.K8s_MANIFEST_REPO }}
+        ref: "${{ steps.set-target-branch.outputs.checkout-branch }}"
+        token: ${{ steps.generate-token.outputs.token }}
+
+    - name: Update K8s manifest
+      env:
+        CONTAINER_TAG: ${{needs.build-and-publish.outputs.container-tag}}
+      run: |
+        kustomize edit set image sample-app="*:${CONTAINER_TAG}"
+      working-directory: "${{ env.APPLICATION_DIR_PREFIX }}/overlays/${{ steps.set-target-branch.outputs.target-dir }}"
+
+    - name: Commit
+      run: |
+        git add .
+        git commit -m "Commit hash: ${{ github.sha }}"
+
+    - name: Push
+      if: ${{ steps.set-target-branch.outputs.target-branch == 'dev' }}
+      run: |
+        git push origin ${{ steps.set-target-branch.outputs.target-branch }}
+    
+    - name: Create Pull Request
+      if: ${{ steps.set-target-branch.outputs.target-branch == 'main' }}
+      id: cpr
+      uses: peter-evans/create-pull-request@v4
+      with:
+        token: ${{ steps.generate-token.outputs.token }}
+        commit-message: Update report
+        committer: GitHub <noreply@github.com>
+        author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
+        signoff: false
+        branch: feature/auto-pr-${{ github.sha }}
+        base: ${{ steps.set-target-branch.outputs.target-branch }}
+        delete-branch: true
+        title: 'CICD: ${{ github.sha }}'
+        body: |
+          CICD automatic PR.
+        labels: |
+          automated pr
+        team-reviewers: |
+          owners
+          maintainers
+        draft: false
+
+    - name: Check outputs
+      if: ${{ steps.set-target-branch.outputs.target-branch == 'main' }}
+      run: |
+        echo "Pull Request Number - ${{ steps.cpr.outputs.pull-request-number }}"
+        echo "Pull Request URL - ${{ steps.cpr.outputs.pull-request-url }}"
