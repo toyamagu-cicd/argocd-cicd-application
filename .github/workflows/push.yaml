@@ -5,8 +5,8 @@ on:
     branches: [ main, dev ]
 
 env:
-  ECR_REPOSITORY: toyamagu-cicd-sample
-  K8s_MANIFEST_REPO: toyamagu-cicd-example/argocd-cicd-k8s-manifest
+  ECR_REPOSITORY: cicd-example
+  K8s_MANIFEST_REPO: toyamagu-cicd/argocd-cicd-k8s-manifest
   APPLICATION_DIR_PREFIX: application/sample-app
   AWS_REGION: ap-northeast-1
 
@@ -25,7 +25,7 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
+      uses: aws-actions/configure-aws-credentials@v1-node16
       with:
         role-to-assume: ${{ secrets.IAM_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
